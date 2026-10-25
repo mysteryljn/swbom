@@ -16,10 +16,30 @@ def parse_requirements(path):
 def parse_package_lock(path):
     data=json.loads(path.read_text(encoding="utf-8")); components=[]; packages=data.get("packages",{})
     for location,info in packages.items():
-        if not location or not info.get("name"): continue
-        components.append({"name":info["name"],"version":info.get("version","UNKNOWN"),"type":"npm"})
+        if not location or not isinstance(info, dict): continue
+        name = info.get("name")
+        if not name:
+            # npm lockfile v2/v3 entries commonly omit ``name``; derive it
+            # from the final node_modules path (including scoped packages).
+            match = re.search(r"(?:^|/)node_modules/((?:@[^/]+/)?[^/]+)$", location)
+            if match:
+                name = match.group(1)
+        if not name:
+            continue
+        components.append({"name":name,"version":info.get("version","UNKNOWN"),"type":"npm"})
     if not components:
-        for name,info in data.get("dependencies",{}).items(): components.append({"name":name,"version":info.get("version","UNKNOWN"),"type":"npm"})
+        def add_dependencies(dependencies):
+            for name, info in dependencies.items():
+                if not isinstance(info, dict):
+                    continue
+                components.append({"name":name,"version":info.get("version","UNKNOWN"),"type":"npm"})
+                nested = info.get("dependencies",{})
+                if isinstance(nested, dict):
+                    add_dependencies(nested)
+
+        dependencies = data.get("dependencies",{})
+        if isinstance(dependencies, dict):
+            add_dependencies(dependencies)
     return components
 
 def generate(path):
