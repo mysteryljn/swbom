@@ -9,7 +9,23 @@ def parse_requirements(path):
     for line in path.read_text(encoding="utf-8").splitlines():
         line=line.strip()
         if not line or line.startswith("#") or line.startswith("-"): continue
-        match=re.match(r"([A-Za-z0-9_.-]+)\s*([=<>!~].*)?$",line)
+        # PEP 508 allows an inline comment after whitespace.  Keep URL
+        # fragments intact while removing comments from pinned versions;
+        # otherwise the comment becomes part of the version and prevents
+        # exact SBOM/vulnerability matching.
+        line = re.split(r"\s+#", line, maxsplit=1)[0].rstrip()
+        # Environment markers qualify a requirement but do not change which
+        # distribution belongs in the SBOM.  This offline tool cannot
+        # evaluate the target interpreter, so retain the package and remove
+        # the marker before parsing its version specifier.
+        line = line.split(";", 1)[0].rstrip()
+        # Extras identify the same distribution and must not make an
+        # otherwise valid requirement disappear from the SBOM.
+        match=re.match(
+            r"([A-Za-z0-9_.-]+)(?:\s*\[[A-Za-z0-9_.-]+(?:\s*,\s*[A-Za-z0-9_.-]+)*\])?"
+            r"\s*([=<>!~].*)?$",
+            line,
+        )
         if match: components.append({"name":match.group(1),"version":(match.group(2) or "").lstrip("=<>!~ ") or "UNKNOWN","type":"python"})
     return components
 

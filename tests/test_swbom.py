@@ -9,6 +9,29 @@ class SbomTests(unittest.TestCase):
             path=Path(tmp)/"requirements.txt"; path.write_text("foo==1.0\n# comment\nbar>=2\n",encoding="utf-8")
             bom=generate(path); self.assertEqual([c["name"] for c in bom["components"]],["bar","foo"])
 
+    def test_requirements_with_extras_and_environment_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "requirements.txt"
+            path.write_text(
+                "requests[socks,security]>=2.31; python_version < '3.13'\n",
+                encoding="utf-8",
+            )
+            bom = generate(path)
+            self.assertEqual(
+                bom["components"],
+                [{"name": "requests", "version": "2.31", "type": "python"}],
+            )
+
+    def test_requirements_strips_inline_comments_from_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "requirements.txt"
+            path.write_text("cryptography==42.0.5  # CVE fix\n", encoding="utf-8")
+            bom = generate(path)
+            self.assertEqual(
+                bom["components"],
+                [{"name": "cryptography", "version": "42.0.5", "type": "python"}],
+            )
+
     def test_package_lock_v1_includes_nested_dependencies(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/"package-lock.json"
