@@ -32,6 +32,33 @@ class SbomTests(unittest.TestCase):
                 [{"name": "cryptography", "version": "42.0.5", "type": "python"}],
             )
 
+    def test_requirements_compound_version_constraint_is_not_reported_as_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "requirements.txt"
+            path.write_text("urllib3>=1.26,<3\n", encoding="utf-8")
+            bom = generate(path)
+            self.assertEqual(
+                bom["components"],
+                [{"name": "urllib3", "version": "UNKNOWN", "type": "python"}],
+            )
+
+    def test_requirements_include_direct_url_and_editable_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "requirements.txt"
+            path.write_text(
+                "my-driver[diagnostics] @ https://packages.example.invalid/my-driver.tar.gz\n"
+                "-e git+https://git.example.invalid/tools.git@main#egg=diag-tools\n",
+                encoding="utf-8",
+            )
+            bom = generate(path)
+            self.assertEqual(
+                bom["components"],
+                [
+                    {"name": "diag-tools", "version": "UNKNOWN", "type": "python"},
+                    {"name": "my-driver", "version": "UNKNOWN", "type": "python"},
+                ],
+            )
+
     def test_package_lock_v1_includes_nested_dependencies(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/"package-lock.json"

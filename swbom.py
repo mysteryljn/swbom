@@ -8,7 +8,18 @@ def parse_requirements(path):
     components=[]
     for line in path.read_text(encoding="utf-8").splitlines():
         line=line.strip()
-        if not line or line.startswith("#") or line.startswith("-"): continue
+        if not line or line.startswith("#"): continue
+        # Editable VCS requirements are valid pip input, but their leading
+        # ``-e``/``--editable`` option used to make them disappear from the
+        # SBOM.  The egg fragment is the package name supplied by pip when
+        # the URL itself does not carry a distribution filename.
+        if line.startswith(("-e ", "--editable ")):
+            target = line.split(None, 1)[1].strip()
+            egg = re.search(r"(?:^|[#&])egg=([A-Za-z0-9_.-]+)(?:&|$)", target)
+            if egg:
+                components.append({"name":egg.group(1),"version":"UNKNOWN","type":"python"})
+            continue
+        if line.startswith("-"): continue
         # PEP 508 allows an inline comment after whitespace.  Keep URL
         # fragments intact while removing comments from pinned versions;
         # otherwise the comment becomes part of the version and prevents
@@ -21,12 +32,40 @@ def parse_requirements(path):
         line = line.split(";", 1)[0].rstrip()
         # Extras identify the same distribution and must not make an
         # otherwise valid requirement disappear from the SBOM.
+        direct = re.match(
+            r"^([A-Za-z0-9_.-]+)(?:\s*\[[A-Za-z0-9_.-]+(?:\s*,\s*[A-Za-z0-9_.-]+)*\])?"
+            r"\s*@\s*\S+$",
+            line,
+        )
+        if direct:
+            # A direct URL/VCS reference has no reliable version without
+            # downloading package metadata; retaining it as UNKNOWN is
+            # safer than silently omitting a dependency from the SBOM.
+            components.append({"name":direct.group(1),"version":"UNKNOWN","type":"python"})
+            continue
+        # pip also accepts a bare archive/VCS URL with an ``#egg`` fragment.
+        # Keep these dependencies visible for the same reason as PEP 508
+        # direct references above.
+        egg = re.search(r"(?:^|[#&])egg=([A-Za-z0-9_.-]+)(?:&|$)", line)
+        if egg and (line.startswith(("git+", "hg+", "svn+", "bzr+", "http://", "https://"))):
+            components.append({"name":egg.group(1),"version":"UNKNOWN","type":"python"})
+            continue
         match=re.match(
             r"([A-Za-z0-9_.-]+)(?:\s*\[[A-Za-z0-9_.-]+(?:\s*,\s*[A-Za-z0-9_.-]+)*\])?"
             r"\s*([=<>!~].*)?$",
             line,
         )
-        if match: components.append({"name":match.group(1),"version":(match.group(2) or "").lstrip("=<>!~ ") or "UNKNOWN","type":"python"})
+        if match:
+            specifier = match.group(2) or ""
+            # A comma joins multiple PEP 440 constraints (for example
+            # ``foo>=1.0,<2.0``), so stripping the first operator would
+            # produce the invalid pseudo-version ``1.0,<2.0``.  Emitting
+            # that value makes downstream vulnerability matching treat a
+            # range as an exact version.  Keep the existing lower-bound
+            # behavior for single constraints, but mark compound ranges as
+            # unknown because this lightweight SBOM has no resolver.
+            version = "UNKNOWN" if "," in specifier else specifier.lstrip("=<>!~ ") or "UNKNOWN"
+            components.append({"name":match.group(1),"version":version,"type":"python"})
     return components
 
 def parse_package_lock(path):
