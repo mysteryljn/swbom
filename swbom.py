@@ -69,10 +69,19 @@ def parse_requirements(path):
     return components
 
 def parse_package_lock(path):
-    data=json.loads(path.read_text(encoding="utf-8")); components=[]; packages=data.get("packages",{})
+    data=json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("package-lock must be a JSON object")
+    components=[]; packages=data.get("packages",{})
+    if packages is None:
+        packages={}
+    if not isinstance(packages, dict):
+        raise ValueError("package-lock packages must be an object")
     for location,info in packages.items():
         if not location or not isinstance(info, dict): continue
         name = info.get("name")
+        if name is not None and not isinstance(name, str):
+            raise ValueError("package-lock package name must be a string")
         if not name:
             # npm lockfile v2/v3 entries commonly omit ``name``; derive it
             # from the final node_modules path (including scoped packages).
@@ -93,6 +102,10 @@ def parse_package_lock(path):
                     add_dependencies(nested)
 
         dependencies = data.get("dependencies",{})
+        if dependencies is None:
+            dependencies={}
+        if not isinstance(dependencies, dict):
+            raise ValueError("package-lock dependencies must be an object")
         if isinstance(dependencies, dict):
             add_dependencies(dependencies)
     return components
@@ -104,7 +117,10 @@ def generate(path):
 def main(argv=None):
     parser=argparse.ArgumentParser(description="Generate a small offline SBOM"); parser.add_argument("input",type=Path); parser.add_argument("-o","--output",type=Path,required=True); args=parser.parse_args(argv)
     try: bom=generate(args.input); args.output.write_text(json.dumps(bom,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
-    except (OSError,json.JSONDecodeError) as exc: print(f"error: {exc}"); return 2
+    # Requirements and lockfiles are external artifacts.  Invalid UTF-8
+    # should be reported as a normal input error instead of leaking a
+    # UnicodeDecodeError traceback from Path.read_text().
+    except (OSError,json.JSONDecodeError,UnicodeError,ValueError,TypeError) as exc: print(f"error: {exc}"); return 2
     print(f"wrote {args.output} ({len(bom['components'])} components)"); return 0
 
 if __name__=="__main__": raise SystemExit(main())

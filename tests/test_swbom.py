@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from swbom import generate
+from swbom import generate, main
 
 class SbomTests(unittest.TestCase):
     def test_requirements(self):
@@ -95,4 +95,34 @@ class SbomTests(unittest.TestCase):
                     ("left-pad", "1.2.0"),
                 ],
             )
+
+    def test_package_lock_rejects_malformed_schema_without_crashing(self):
+        # A malformed lockfile must fail closed instead of reaching
+        # ``.items()`` or sorting with a non-string name and raising a
+        # traceback from the SBOM command.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "package-lock.json"
+            output = Path(tmp) / "sbom.json"
+            for payload, message in (
+                ("[]", "must be a JSON object"),
+                ('{"packages":[]}', "packages must be an object"),
+                ('{"packages":{"node_modules/bad":{"name":{"invalid":true}}}}', "name must be a string"),
+                ('{"dependencies":[]}', "dependencies must be an object"),
+            ):
+                path.write_text(payload, encoding="utf-8")
+                with self.subTest(payload=payload):
+                    with self.assertRaisesRegex(ValueError, message):
+                        generate(path)
+                    self.assertEqual(main([str(path), "--output", str(output)]), 2)
+                    self.assertFalse(output.exists())
+
+    def test_cli_reports_non_utf8_requirements_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "requirements.txt"
+            output = Path(tmp) / "sbom.json"
+            path.write_bytes(b"foo==1.0\n\xff\xfe")
+            exit_code = main([str(path), "--output", str(output)])
+            self.assertEqual(exit_code, 2)
+            self.assertFalse(output.exists())
+
 if __name__=="__main__": unittest.main()
