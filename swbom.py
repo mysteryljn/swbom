@@ -93,13 +93,18 @@ def parse_package_lock(path):
         components.append({"name":name,"version":info.get("version","UNKNOWN"),"type":"npm"})
     if not components:
         def add_dependencies(dependencies):
-            for name, info in dependencies.items():
+            # Lockfiles are untrusted generated input.  An unusually deep
+            # dependency tree must not consume Python's call stack while
+            # recursively walking nested ``dependencies`` objects.
+            stack=list(reversed(list(dependencies.items())))
+            while stack:
+                name, info = stack.pop()
                 if not isinstance(info, dict):
                     continue
                 components.append({"name":name,"version":info.get("version","UNKNOWN"),"type":"npm"})
                 nested = info.get("dependencies",{})
                 if isinstance(nested, dict):
-                    add_dependencies(nested)
+                    stack.extend(reversed(list(nested.items())))
 
         dependencies = data.get("dependencies",{})
         if dependencies is None:
@@ -116,11 +121,19 @@ def generate(path):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description="Generate a small offline SBOM"); parser.add_argument("input",type=Path); parser.add_argument("-o","--output",type=Path,required=True); args=parser.parse_args(argv)
-    try: bom=generate(args.input); args.output.write_text(json.dumps(bom,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
+    try:
+        # Component metadata comes from untrusted lockfiles.  Escaped lone
+        # surrogates are valid JSON values but cannot be encoded by a strict
+        # UTF-8 output stream when ensure_ascii=False is used.  ASCII escaping
+        # keeps the generated SBOM serializable for every accepted input.
+        bom=generate(args.input); args.output.write_text(json.dumps(bom,indent=2,ensure_ascii=True)+"\n",encoding="utf-8")
     # Requirements and lockfiles are external artifacts.  Invalid UTF-8
     # should be reported as a normal input error instead of leaking a
     # UnicodeDecodeError traceback from Path.read_text().
-    except (OSError,json.JSONDecodeError,UnicodeError,ValueError,TypeError) as exc: print(f"error: {exc}"); return 2
+    # The JSON decoder itself can raise RecursionError for a deeply nested
+    # lockfile before the schema checks run; report it as a normal input error
+    # rather than leaking a traceback from the SBOM generator.
+    except (OSError,json.JSONDecodeError,UnicodeError,ValueError,TypeError,RecursionError) as exc: print(f"error: {exc}"); return 2
     print(f"wrote {args.output} ({len(bom['components'])} components)"); return 0
 
 if __name__=="__main__": raise SystemExit(main())

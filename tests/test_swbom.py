@@ -1,7 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
-from swbom import generate, main
+from unittest.mock import patch
+from swbom import generate, main, parse_package_lock
 
 class SbomTests(unittest.TestCase):
     def test_requirements(self):
@@ -124,5 +125,59 @@ class SbomTests(unittest.TestCase):
             exit_code = main([str(path), "--output", str(output)])
             self.assertEqual(exit_code, 2)
             self.assertFalse(output.exists())
+
+    def test_deep_nested_dependencies_are_walked_without_recursion_error(self):
+        # A generated v1 lockfile can contain a dependency chain deeper than
+        # Python's recursion limit.  Keep the traversal iterative so valid
+        # components are still emitted instead of aborting the SBOM build.
+        depth = 1500
+        dependencies = {}
+        for index in range(depth - 1, -1, -1):
+            dependencies = {
+                "package-%d" % index: {
+                    "version": "1.0.0",
+                    "dependencies": dependencies,
+                }
+            }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "package-lock.json"
+            path.write_text("{}", encoding="utf-8")
+            with patch(
+                "swbom.json.loads",
+                return_value={"lockfileVersion": 1, "dependencies": dependencies},
+            ):
+                components = parse_package_lock(path)
+        self.assertEqual(len(components), depth)
+        self.assertEqual(components[0]["name"], "package-0")
+
+    def test_cli_reports_deeply_nested_json_without_traceback(self):
+        # Malformed deeply nested JSON may fail inside ``json.loads`` itself;
+        # the CLI should return its regular input-error status.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "package-lock.json"
+            output = Path(tmp) / "sbom.json"
+            path.write_text("[" * 2000 + "0" + "]" * 2000, encoding="utf-8")
+            self.assertEqual(main([str(path), "--output", str(output)]), 2)
+            self.assertFalse(output.exists())
+
+    def test_cli_escapes_lone_surrogate_package_names(self):
+        # Lockfiles are external JSON.  An escaped surrogate in a package
+        # name must not crash UTF-8 report generation.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "package-lock.json"
+            output = Path(tmp) / "sbom.json"
+            path.write_text(
+                '{"lockfileVersion": 3, "packages": {'
+                '"node_modules/example": {"name": "\\ud800", "version": "1.0.0"}'
+                '}}',
+                encoding="utf-8",
+            )
+
+            exit_code = main([str(path), "--output", str(output)])
+
+            self.assertEqual(exit_code, 0)
+            report_bytes = output.read_bytes()
+            self.assertIn(b"\\ud800", report_bytes)
+            self.assertNotIn(b"\xef\xbf\xbd", report_bytes)
 
 if __name__=="__main__": unittest.main()
